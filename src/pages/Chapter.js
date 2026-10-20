@@ -1,87 +1,127 @@
+
 import { useParams, Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { doc, setDoc, getDoc } from "firebase/firestore";
 import { useAuth } from "../context/AuthContext";
 import { db } from "../firebase";
+import { fetchBibleChapter } from "../pages/apiBible";
 
 export default function Chapter() {
   const { book, chapter } = useParams();
   const { user } = useAuth();
-  const [verses, setVerses] = useState([]);
+
+  const [chapterData, setChapterData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [completed, setCompleted] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  // Fetch real Bible text
+  // Fetch the actual chapter from API.Bible.
   useEffect(() => {
-    const fetchChapter = async () => {
+    let cancelled = false;
+
+    async function loadChapter() {
+      setLoading(true);
+      setError("");
+      setChapterData(null);
+
       try {
-        setLoading(true);
-        setError("");
+        const data = await fetchBibleChapter(book, chapter);
 
-        // Convert book name for the API (example: "1 Samuel" → "1samuel")
-        const bookName = book.toLowerCase().replace(/\s+/g, "");
-        
-        const response = await fetch(
-          `https://bible-api.com/${bookName}+${chapter}?translation=kjv`
-        );
-
-        if (!response.ok) {
-          throw new Error("Chapter not found");
+        if (!cancelled) {
+          setChapterData(data);
         }
-
-        const data = await response.json();
-        setVerses(data.verses || []);
       } catch (err) {
-        setError("Sorry, could not load this chapter. Please try another one.");
-        setVerses([]);
+        if (!cancelled) {
+          setError(
+            err.message || "Could not load this Bible chapter."
+          );
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
-    };
+    }
 
-    fetchChapter();
+    loadChapter();
+
+    return () => {
+      cancelled = true;
+    };
   }, [book, chapter]);
 
-  // Load progress from Firebase
+  // Load reading progress from Firebase.
   useEffect(() => {
-    if (!user) return;
+    let cancelled = false;
 
-    const loadProgress = async () => {
-      const ref = doc(db, "progress", user.uid);
-      const snap = await getDoc(ref);
-      if (snap.exists()) {
-        const data = snap.data();
-        const key = `${book}-${chapter}`;
-        setCompleted(!!data.completed?.[key]);
+    async function loadProgress() {
+      setCompleted(false);
+
+      if (!user) return;
+
+      try {
+        const ref = doc(db, "progress", user.uid);
+        const snap = await getDoc(ref);
+
+        if (!cancelled && snap.exists()) {
+          const data = snap.data();
+          const key = `${book}-${chapter}`;
+          setCompleted(!!data.completed?.[key]);
+        }
+      } catch (err) {
+        console.error("Could not load reading progress:", err);
       }
-    };
+    }
 
     loadProgress();
+
+    return () => {
+      cancelled = true;
+    };
   }, [book, chapter, user]);
 
-  // Mark chapter as completed
-  const markComplete = async () => {
-    if (!user) return;
+  // Mark the chapter as completed.
+  async function markComplete() {
+    if (!user) {
+      setError("Please sign in to save your reading progress.");
+      return;
+    }
 
-    const ref = doc(db, "progress", user.uid);
-    const key = `${book}-${chapter}`;
+    try {
+      setSaving(true);
 
-    await setDoc(
-      ref,
-      {
-        completed: { [key]: true },
-        lastRead: {
-          book,
-          chapter: Number(chapter),
-          timestamp: new Date(),
+      const ref = doc(db, "progress", user.uid);
+      const key = `${book}-${chapter}`;
+
+      // Preserve previously completed chapters.
+      const snap = await getDoc(ref);
+      const existing = snap.exists() ? snap.data() : {};
+
+      await setDoc(
+        ref,
+        {
+          completed: {
+            ...(existing.completed || {}),
+            [key]: true,
+          },
+          lastRead: {
+            book,
+            chapter: Number(chapter),
+            timestamp: new Date(),
+          },
         },
-      },
-      { merge: true }
-    );
+        { merge: true }
+      );
 
-    setCompleted(true);
-  };
+      setCompleted(true);
+    } catch (err) {
+      console.error("Could not save progress:", err);
+      setError("Unable to save your progress. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="chapter-page">
@@ -89,27 +129,38 @@ export default function Chapter() {
         <Link to="/bible" className="back">
           ← Back to Books
         </Link>
+
         <h1>
           {book} {chapter}
         </h1>
       </div>
 
       <div className="chapter-text">
-        {loading && <p>Loading chapter...</p>}
+        {loading && <p>Loading Bible chapter...</p>}
 
-        {error && <p style={{ color: "#f87171" }}>{error}</p>}
+        {error && (
+          <p role="alert" style={{ color: "#f87171" }}>
+            {error}
+          </p>
+        )}
 
-        {!loading && !error && verses.length > 0 && (
-          <div>
-            {verses.map((verse) => (
-              <p key={verse.verse} style={{ marginBottom: "1.1rem" }}>
-                <strong style={{ color: "#60a5fa", marginRight: "8px" }}>
-                  {verse.verse}
-                </strong>
-                {verse.text}
+        {!loading && !error && chapterData && (
+          <article className="bible-text">
+            <h2>{chapterData.reference || `${book} ${chapter}`}</h2>
+
+            <div
+              className="chapter-content"
+              dangerouslySetInnerHTML={{
+                __html: chapterData.content || "",
+              }}
+            />
+
+            {chapterData.copyright && (
+              <p className="bible-copyright">
+                {chapterData.copyright}
               </p>
-            ))}
-          </div>
+            )}
+          </article>
         )}
       </div>
 
@@ -117,10 +168,18 @@ export default function Chapter() {
         <button
           onClick={markComplete}
           className={`btn ${completed ? "completed" : "primary"}`}
-          disabled={completed || loading}
+          disabled={completed || loading || saving || !!error}
         >
-          {completed ? "✓ Completed" : "Mark as Completed"}
+          {saving
+            ? "Saving..."
+            : completed
+              ? "✓ Completed"
+              : "Mark as Completed"}
         </button>
+
+        {!user && (
+          <p>Sign in to save your reading progress.</p>
+        )}
       </div>
     </div>
   );

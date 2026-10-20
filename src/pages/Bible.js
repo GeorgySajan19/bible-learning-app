@@ -79,6 +79,7 @@ const BOOKS = [
   { name: "Revelation", chapters: 22 }
 ];
 
+
 export default function Bible() {
   return (
     <div className="bible-page">
@@ -94,19 +95,18 @@ export default function Bible() {
             <p>{book.chapters} chapters</p>
 
             <div className="chapter-links">
-              {Array.from({ length: Math.min(book.chapters, 12) }, (_, i) => (
+              {Array.from(
+                { length: book.chapters },
+                (_, i) => i + 1
+              ).map((chapter) => (
                 <Link
-                  key={i + 1}
-                  to={`/bible/${encodeURIComponent(book.name)}/${i + 1}`}
+                  key={chapter}
+                  to={`/bible/${encodeURIComponent(book.name)}/${chapter}`}
                   className="chapter-btn"
                 >
-                  {i + 1}
+                  {chapter}
                 </Link>
               ))}
-
-              {book.chapters > 12 && (
-                <span className="more">+{book.chapters - 12} more</span>
-              )}
             </div>
           </div>
         ))}
